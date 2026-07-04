@@ -91,6 +91,31 @@ export class QuicTransport implements Transport {
     this.log('new')
   }
 
+  /**
+   * No-op. The QUIC client endpoints are created eagerly in the constructor; this
+   * exists so libp2p recognises the transport as `Startable` (`isStartable` requires
+   * both `start` and `stop`) and therefore invokes `stop()` on shutdown.
+   */
+  async start (): Promise<void> {}
+
+  /**
+   * Release the QUIC client (dialer) endpoints on libp2p shutdown.
+   *
+   * The dialer `Client` endpoints are created once in the constructor and shared
+   * across every dial, so — unlike the listener's `Server`, which is torn down in
+   * `QuicListener.close()` — nothing else closes them. Each holds a live
+   * `quinn::Endpoint` (UDP socket + Tokio driver task); left open, the driver keeps
+   * polling the socket indefinitely. When the transport runs in a worker thread this
+   * keeps the worker busy so it can not terminate on shutdown (the V8 isolate never
+   * reaches a teardown safepoint), hanging the process until it is force-killed.
+   * Aborting the endpoints here lets them wind down so the worker can exit cleanly.
+   */
+  async stop (): Promise<void> {
+    this.#clients.ip4?.abort()
+    this.#clients.ip6?.abort()
+    this.log('stopped')
+  }
+
   async dial (ma: Multiaddr, options: QuicDialOptions): Promise<Connection> {
     if (options.signal?.aborted) {
       throw new AbortError()
