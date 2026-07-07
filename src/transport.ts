@@ -29,6 +29,8 @@ export class QuicTransport implements Transport {
   readonly metrics: QuicTransportMetrics
 
   readonly #config: napi.QuinnConfig
+  readonly #enableIpv4: boolean
+  readonly #enableIpv6: boolean
 
   readonly #clients: {
     ip4?: napi.Client
@@ -46,33 +48,11 @@ export class QuicTransport implements Transport {
     this.components = components
 
     this.#config = new napi.QuinnConfig(config)
+    this.#enableIpv4 = options.ipv4 !== false
+    this.#enableIpv6 = options.ipv6 !== false
+    this.#clients = {}
 
-    let ip4Client: napi.Client | undefined
-    if (options.ipv4 !== false) {
-      try {
-        ip4Client = new napi.Client(this.#config, 0)
-      } catch {
-        this.log('IPv4 QUIC client not available')
-      }
-    }
-
-    let ip6Client: napi.Client | undefined
-    if (options.ipv6 !== false) {
-      try {
-        ip6Client = new napi.Client(this.#config, 1)
-      } catch {
-        this.log('IPv6 QUIC client not available')
-      }
-    }
-
-    if (ip4Client == null && ip6Client == null) {
-      throw new Error('At least one of ipv4 or ipv6 must be enabled for QUIC transport')
-    }
-
-    this.#clients = {
-      ip4: ip4Client,
-      ip6: ip6Client
-    }
+    this.#openClients()
 
     this.metrics = {
       events: this.components.metrics?.registerCounterGroup('libp2p_quic_dialer_events_total', {
@@ -91,28 +71,44 @@ export class QuicTransport implements Transport {
     this.log('new')
   }
 
-  /**
-   * No-op. The QUIC client endpoints are created eagerly in the constructor; this
-   * exists so libp2p recognises the transport as `Startable` (`isStartable` requires
-   * both `start` and `stop`) and therefore invokes `stop()` on shutdown.
-   */
-  async start (): Promise<void> {}
+  #openClients (): void {
+    if (this.#clients.ip4 != null || this.#clients.ip6 != null) {
+      return
+    }
 
-  /**
-   * Release the QUIC client (dialer) endpoints on libp2p shutdown.
-   *
-   * The dialer `Client` endpoints are created once in the constructor and shared
-   * across every dial, so — unlike the listener's `Server`, which is torn down in
-   * `QuicListener.close()` — nothing else closes them. Each holds a live
-   * `quinn::Endpoint` (UDP socket + Tokio driver task); left open, the driver keeps
-   * polling the socket indefinitely. When the transport runs in a worker thread this
-   * keeps the worker busy so it can not terminate on shutdown (the V8 isolate never
-   * reaches a teardown safepoint), hanging the process until it is force-killed.
-   * Aborting the endpoints here lets them wind down so the worker can exit cleanly.
-   */
+    if (this.#enableIpv4) {
+      try {
+        this.#clients.ip4 = new napi.Client(this.#config, 0)
+      } catch {
+        this.log('IPv4 QUIC client not available')
+      }
+    }
+
+    if (this.#enableIpv6) {
+      try {
+        this.#clients.ip6 = new napi.Client(this.#config, 1)
+      } catch {
+        this.log('IPv6 QUIC client not available')
+      }
+    }
+
+    if (this.#clients.ip4 == null && this.#clients.ip6 == null) {
+      throw new Error('At least one of ipv4 or ipv6 must be enabled for QUIC transport')
+    }
+  }
+
+  async start (): Promise<void> {
+    this.#openClients()
+  }
+
   async stop (): Promise<void> {
-    this.#clients.ip4?.abort()
-    this.#clients.ip6?.abort()
+    const { ip4, ip6 } = this.#clients
+
+    this.#clients.ip4 = undefined
+    this.#clients.ip6 = undefined
+
+    ip4?.abort()
+    ip6?.abort()
     this.log('stopped')
   }
 
