@@ -99,6 +99,7 @@ export class QuicTransport implements Transport {
 
   async start (): Promise<void> {
     this.#openClients()
+    this.log('started')
   }
 
   async stop (): Promise<void> {
